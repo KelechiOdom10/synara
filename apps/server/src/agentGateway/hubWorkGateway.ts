@@ -121,6 +121,20 @@ export function makeHubWorkGateway(dependencies: {
       // Keep its reservation until the creation ledger confirms cleanup; replaying a
       // nonterminal saga here would also block the scanner waiting for that saga.
       if (yield* hasUnfinishedCreation(record)) return;
+      // A queued pipeline worker may have gone stale while it waited, for example a second review
+      // queued before the first one reported.
+      const pipelineRefusal = yield* service.assertPipelineStart(record).pipe(
+        Effect.as(null),
+        Effect.catch((error) => Effect.succeed(error.message)),
+      );
+      if (pipelineRefusal !== null) {
+        yield* service.setState({
+          workItemId: record.id,
+          state: "failed",
+          resultSummary: pipelineRefusal.slice(0, 4_000),
+        });
+        return;
+      }
       const spec = record.creationSpec;
       const result = yield* dependencies.createThreads(
         {

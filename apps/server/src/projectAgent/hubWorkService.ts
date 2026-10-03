@@ -28,6 +28,7 @@ import type { ProjectAgentRepositoryShape } from "../persistence/Services/Projec
 import { ProjectAgentServiceError } from "./Errors";
 import { resolveHubWorkLifecycle } from "./hubWorkLifecycle";
 import { isServerGroupsEnabled } from "./groupsBetaGate";
+import { decidePipelineStart } from "./issuePipeline";
 import type { ProjectAgentPrincipal } from "./principal";
 import type { ProjectAgentServiceShape } from "./Services/ProjectAgentService";
 
@@ -101,6 +102,10 @@ export interface HubWorkService {
     projectId: ProjectId,
     principal: ProjectAgentPrincipal,
   ) => Effect.Effect<readonly HubWorkItem[], ProjectAgentServiceError>;
+  /** Re-checks an issue-pipeline gate when queued work is about to start. */
+  readonly assertPipelineStart: (
+    record: HubWorkRecord,
+  ) => Effect.Effect<void, ProjectAgentServiceError>;
 }
 
 const fail = (message: string, code: ProjectAgentServiceError["code"] = "forbidden") =>
@@ -116,6 +121,8 @@ const serviceError = (cause: unknown) =>
             : undefined,
         cause,
       });
+// Pipeline gates read every task in the hub; a hub never approaches this many.
+const PIPELINE_TASK_SCAN_LIMIT = 5_000;
 const inactiveStates = new Set<HubWorkState>([
   "queued",
   "idle",
@@ -190,6 +197,44 @@ export function makeHubWorkService(dependencies: HubWorkDependencies): HubWorkSe
       return Effect.fail(fail("Cross-hub access is blocked."));
     return Effect.void;
   };
+
+  const assertPipelineGate = (input: {
+    readonly projectId: ProjectId;
+    readonly spec: SynaraCreateThreadSpec;
+    readonly pendingRecords: ReadonlyArray<HubWorkRecord>;
+    readonly isSameWork: (record: HubWorkRecord) => boolean;
+  }) =>
+    Effect.gen(function* () {
+      const pipeline = input.spec.pipeline;
+      if (!pipeline) return;
+      const config = yield* requireConfig(input.projectId);
+      const goal = yield* projectAgentRepository
+        .getActiveGoal(input.projectId)
+        .pipe(Effect.mapError(serviceError));
+      // Workers only receive a task, and so a pipeline tag, while the hub goal is active.
+      if (Option.isNone(goal) || goal.value.status !== "active")
+        return yield* Effect.fail(
+          fail("Start the hub goal before running an issue pipeline.", "conflict"),
+        );
+      const stored = yield* repository.list(input.projectId).pipe(Effect.mapError(serviceError));
+      const tasks = yield* projectAgentRepository
+        .listTasks({
+          projectId: input.projectId,
+          includeArchived: true,
+          limit: PIPELINE_TASK_SCAN_LIMIT,
+        })
+        .pipe(Effect.mapError(serviceError));
+      const decision = decidePipelineStart({
+        request: { pipeline, provider: input.spec.target.provider },
+        records: [...stored.filter((record) => !input.isSameWork(record)), ...input.pendingRecords],
+        tasks,
+        maxRepairRounds: Math.min(
+          config.limits.maxRepairRoundsPerTask,
+          DEFAULT_PROJECT_AGENT_LIMITS.maxRepairRoundsPerTask,
+        ),
+      });
+      if (decision.kind === "refused") return yield* Effect.fail(fail(decision.reason, "conflict"));
+    });
 
   return {
     submit: (input) =>
@@ -290,6 +335,12 @@ export function makeHubWorkService(dependencies: HubWorkDependencies): HubWorkSe
             createdAt: now,
             updatedAt: now,
           }).pipe(Effect.mapError(serviceError));
+          yield* assertPipelineGate({
+            projectId: principal.projectId,
+            spec: task.spec,
+            pendingRecords: records,
+            isSameWork: (stored) => stored.scopeKey === scopeKey,
+          });
           records.push(record);
         }
         const result = yield* repository.submit(records).pipe(Effect.mapError(serviceError));
@@ -526,6 +577,14 @@ export function makeHubWorkService(dependencies: HubWorkDependencies): HubWorkSe
             fail("Stop the active worker before cancelling this task.", "conflict"),
           );
         return yield* save(record, { state: "cancelled", slotHeld: false, queueReason: null });
+      }),
+
+    assertPipelineStart: (record) =>
+      assertPipelineGate({
+        projectId: record.projectId,
+        spec: record.creationSpec,
+        pendingRecords: [],
+        isSameWork: (stored) => stored.id === record.id,
       }),
 
     list: (projectId, principal) =>

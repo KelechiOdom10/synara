@@ -21,7 +21,7 @@ import {
   type ServerSettings,
 } from "@synara/contracts";
 import { MEMORY_AUTO_DOCUMENT_PATH, memoryThreadDocumentPath } from "@synara/shared/projectAgent";
-import { Cause, Deferred, Effect, Fiber, Layer, Option, Stream } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Option, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { AgentGatewayOperationRepository } from "../../agentGateway/Services/AgentGatewayOperationRepository.ts";
@@ -1469,6 +1469,7 @@ it.effect("resolves linked-repo workers through the task assignment", () => {
         status: "running",
         dependsOnTaskIds: [],
         assignedThreadId: linkedWorkerThreadId,
+        pipeline: null,
         repairCount: 0,
         archivedAt: null,
         revision: 1,
@@ -1608,6 +1609,7 @@ it.effect("reports member threads, linked repos, and setup flags in summaries", 
         status: "running",
         dependsOnTaskIds: [],
         assignedThreadId: linkedWorkerThreadId,
+        pipeline: null,
         repairCount: 0,
         archivedAt: null,
         revision: 1,
@@ -1630,6 +1632,7 @@ it.effect("reports member threads, linked repos, and setup flags in summaries", 
         status: "done",
         dependsOnTaskIds: [],
         assignedThreadId: finishedWorkerThreadId,
+        pipeline: null,
         repairCount: 0,
         archivedAt: null,
         revision: 1,
@@ -1651,6 +1654,7 @@ it.effect("reports member threads, linked repos, and setup flags in summaries", 
         status: "running",
         dependsOnTaskIds: [],
         assignedThreadId: archivedWorkerThreadId,
+        pipeline: null,
         repairCount: 0,
         archivedAt: now,
         revision: 1,
@@ -2265,6 +2269,7 @@ it.effect("rejects cross-project task and evidence access", () => {
         status: "running",
         dependsOnTaskIds: [],
         assignedThreadId: null,
+        pipeline: null,
         repairCount: 0,
         archivedAt: null,
         revision: 1,
@@ -2373,6 +2378,7 @@ it.effect("routes a done update through the accept path and validates dependency
         status: "running",
         dependsOnTaskIds: [],
         assignedThreadId: null,
+        pipeline: null,
         repairCount: 0,
         archivedAt: null,
         revision: 1,
@@ -2437,6 +2443,7 @@ it.effect("routes a done update through the accept path and validates dependency
         status: "running",
         dependsOnTaskIds: [],
         assignedThreadId: null,
+        pipeline: null,
         repairCount: 0,
         archivedAt: null,
         revision: 1,
@@ -3320,6 +3327,7 @@ it.effect("delete removes hub data, keeps custom libraries and linked repos", ()
         status: "running",
         dependsOnTaskIds: [],
         assignedThreadId: linkedWorkerThreadId,
+        pipeline: null,
         repairCount: 0,
         archivedAt: null,
         revision: 1,
@@ -4262,6 +4270,7 @@ it.effect("isolates coordinator instructions from member and worker packets", ()
         status: "running",
         dependsOnTaskIds: [],
         assignedThreadId: workerThreadId,
+        pipeline: null,
         repairCount: 0,
         archivedAt: null,
         revision: 1,
@@ -4485,6 +4494,88 @@ it.effect("tracks every coordinator-created thread as a managed worker, goal or 
       batchId: "req-mon-record",
     });
     assert.equal(batch.length, 1);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("tags pipeline worker tasks and reserves plan approval for the user", () => {
+  const harness = makeTestLayer();
+  return Effect.gen(function* () {
+    const service = yield* ProjectAgentService;
+    const repository = yield* ProjectAgentRepository;
+    const overview = yield* configureTestGroup(service, "req-pipeline-setup");
+    const coordinator = {
+      kind: "coordinator" as const,
+      threadId: overview.config!.coordinatorThreadId!,
+      projectId: groupId,
+    };
+    yield* repository.saveGoal(
+      {
+        id: ProjectGoalId.makeUnsafe("goal-pipeline"),
+        projectId: groupId,
+        objective: "Ship the priority: now issues",
+        authorizationSource: "user",
+        scopeVersion: 1,
+        acceptanceCriteria: null,
+        limits,
+        status: "active",
+        continuationCount: 0,
+        workerCreationCount: 0,
+        authorizedAt: now,
+        revision: 1,
+        createdAt: now,
+        updatedAt: now,
+      },
+      null,
+    );
+    const pipeline = {
+      issue: { repository: "kelechiodom/work-achievements-tracker", number: 3 },
+      role: "plan" as const,
+    };
+    yield* service.recordManagedWorkerThreads({
+      requestId: "req-pipeline-record",
+      callerThreadId: coordinator.threadId,
+      threadIds: [ThreadId.makeUnsafe("thread-pipeline-plan")],
+      titles: ["#3 Plan"],
+      pipelines: [pipeline],
+    });
+    const [planTask] = yield* repository.listTasks({
+      projectId: groupId,
+      includeArchived: false,
+      limit: 10,
+    });
+    assert.deepStrictEqual(planTask?.pipeline, pipeline);
+    yield* service.reportResult(
+      {
+        requestId: "req-pipeline-report",
+        projectId: groupId,
+        taskId: planTask!.id,
+        summary: "Plan",
+      },
+      { kind: "user" },
+    );
+    const reported = Option.getOrThrow(yield* repository.getTask(planTask!.id));
+    assert.equal(reported.status, "review");
+
+    const accept = {
+      requestId: "req-pipeline-accept",
+      projectId: groupId,
+      taskId: reported.id,
+      expectedRevision: reported.revision,
+      accept: true,
+    };
+    const byCoordinator = yield* Effect.exit(service.updateTask(accept, coordinator));
+    assert.include(
+      Exit.isFailure(byCoordinator)
+        ? Option.getOrUndefined(Exit.findErrorOption(byCoordinator))?.message
+        : "accepted",
+      "Only the user can approve an issue plan",
+    );
+    assert.equal(Option.getOrThrow(yield* repository.getTask(reported.id)).status, "review");
+    const byUser = yield* service.updateTask(
+      { ...accept, requestId: "req-pipeline-accept-user" },
+      { kind: "user" },
+    );
+    assert.equal(byUser.status, "done");
   }).pipe(Effect.provide(harness.layer));
 });
 
@@ -5266,6 +5357,7 @@ it.effect("quotes report_result in the settle row and roll-up", () => {
         status: "running",
         dependsOnTaskIds: [],
         assignedThreadId: threadA,
+        pipeline: null,
         repairCount: 0,
         archivedAt: null,
         revision: 1,

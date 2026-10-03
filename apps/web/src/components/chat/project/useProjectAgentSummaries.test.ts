@@ -201,6 +201,7 @@ describe("useProjectAgentSummaries store", () => {
           status: "running",
           dependsOnTaskIds: [],
           assignedThreadId: memberThreadId,
+          pipeline: null,
           repairCount: 0,
           archivedAt: null,
           revision: 1,

@@ -1,7 +1,9 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  DEFAULT_PROJECT_AGENT_LIMITS,
   MessageId,
+  ProjectGoalId,
   ProjectId,
   ThreadId,
   TurnId,
@@ -119,6 +121,8 @@ function harness(name: string) {
     return {
       service,
       repository,
+      projectAgentRepository,
+      sourceMessages,
       projectId,
       coordinator,
       workerId,
@@ -566,6 +570,70 @@ tests("Hub work provenance, ownership and lifecycle", (it) => {
       assert.equal(current?.state, "starting");
       assert.equal(current?.slotHeld, true);
       assert.equal(current?.admissionCommandId, commandId);
+    }),
+  );
+
+  it.effect("gates issue-pipeline work at submission and again before it starts", () =>
+    Effect.gen(function* () {
+      const h = yield* harness("pipeline");
+      const issue = { repository: "kelechiodom/work-achievements-tracker", number: 3 };
+      const pipelineTask = (role: "plan" | "build", sourceIndex: number) => ({
+        ...h.input,
+        sourceMessages: [h.sourceMessages[sourceIndex]!],
+        tasks: [
+          {
+            spec: {
+              prompt: `#3 ${role}`,
+              target: { provider: "claudeAgent" as const, model: "fixture" },
+              pipeline: { issue, role },
+            },
+          },
+        ],
+      });
+      const refusal = (exit: Exit.Exit<unknown, ProjectAgentServiceError>) =>
+        Exit.isFailure(exit)
+          ? String(Option.getOrUndefined(Exit.findErrorOption(exit))?.message)
+          : null;
+
+      assert.include(
+        refusal(yield* Effect.exit(h.service.submit(pipelineTask("plan", 0)))),
+        "Start the hub goal",
+      );
+
+      yield* h.projectAgentRepository.saveGoal(
+        {
+          id: ProjectGoalId.makeUnsafe("pipeline-goal"),
+          projectId: h.projectId,
+          objective: "Ship the priority: now issues",
+          authorizationSource: "user",
+          scopeVersion: 1,
+          acceptanceCriteria: null,
+          limits: DEFAULT_PROJECT_AGENT_LIMITS,
+          status: "active",
+          continuationCount: 0,
+          workerCreationCount: 0,
+          authorizedAt: now,
+          revision: 1,
+          createdAt: now,
+          updatedAt: now,
+        },
+        null,
+      );
+
+      const planned = yield* h.service.submit(pipelineTask("plan", 0));
+      assert.equal(planned.items[0]?.creationSpec.pipeline?.role, "plan");
+      assert.equal((yield* h.service.submit(pipelineTask("plan", 0))).replayed, true);
+      assert.include(
+        refusal(yield* Effect.exit(h.service.submit(pipelineTask("plan", 1)))),
+        "already has pipeline work",
+      );
+      assert.include(
+        refusal(yield* Effect.exit(h.service.submit(pipelineTask("build", 1)))),
+        "approved before building",
+      );
+
+      const queuedPlan = (yield* h.repository.get(planned.items[0]!.id))!;
+      yield* h.service.assertPipelineStart(queuedPlan);
     }),
   );
 });

@@ -14,6 +14,7 @@ import {
   type OrchestrationThreadShell,
   type ProviderInteractionMode,
   type ProviderKind,
+  type ProjectTaskPipeline,
   type SynaraCreateThreadsInput,
   type SynaraCreateThreadsResult,
 } from "@synara/contracts";
@@ -113,6 +114,7 @@ interface CreationCoordinatorDependencies {
     readonly threadIds: ReadonlyArray<ThreadId>;
     readonly titles: ReadonlyArray<string>;
     readonly prompts?: ReadonlyArray<string | null>;
+    readonly pipelines?: ReadonlyArray<ProjectTaskPipeline | null>;
   }) => Effect.Effect<void, ToolInputError>;
   readonly assertCreateTargetProject?: (input: {
     readonly callerThreadId: string;
@@ -506,6 +508,13 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
           callerThreadId: caller.id,
           requestedCount: input.threads.length,
         });
+      }
+      if (context.kind !== "hub-work" && input.threads.some((spec) => spec.pipeline)) {
+        return yield* Effect.fail(
+          new ToolInputError(
+            '"pipeline" is only accepted from a hub coordinator, whose work goes through the hub queue.',
+          ),
+        );
       }
       const deprecatedBranchName = input.threads.find((spec) => spec.branchName !== undefined);
       if (deprecatedBranchName) {
@@ -1265,6 +1274,9 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
           const promptByThreadId = new Map(
             createdThreads.map((entry) => [entry.ids.threadId, entry.spec.prompt]),
           );
+          const pipelineByThreadId = new Map(
+            createdThreads.map((entry) => [entry.ids.threadId, entry.spec.pipeline ?? null]),
+          );
           // Required Group tracking belongs to the same transaction as the
           // replay result. Registration or commit failure rolls metadata back
           // before the existing compensation path removes created resources.
@@ -1281,6 +1293,9 @@ export const makeCreateThreadsHandler = Effect.fn(function* (
                   titles: result.threads.map((thread) => thread.title),
                   prompts: result.threadIds.map(
                     (threadId) => promptByThreadId.get(threadId) ?? null,
+                  ),
+                  pipelines: result.threadIds.map(
+                    (threadId) => pipelineByThreadId.get(threadId) ?? null,
                   ),
                 });
               if (context.kind === "hub-work") yield* context.recordWorker(result.threadIds[0]!);

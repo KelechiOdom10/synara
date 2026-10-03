@@ -264,6 +264,35 @@ layer("Hub work creation saga", (it) => {
       }),
   );
 
+  it.effect("refuses issue-pipeline tags that do not come through the hub queue", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeFixture("direct-pipeline");
+      const result = yield* fixture.handler(
+        {
+          requestId: "direct-pipeline",
+          threads: [
+            {
+              ...INPUT.threads[0]!,
+              pipeline: {
+                issue: { repository: "kelechiodom/work-achievements-tracker", number: 3 },
+                role: "build",
+              },
+            },
+          ],
+        },
+        {
+          kind: "provider-session",
+          callerThreadId: CALLER_ID,
+          callerTurnId: "turn-direct-pipeline",
+          assertAuthority: () => Effect.void,
+        },
+      );
+      assert.equal(result.isError, true);
+      assert.include(JSON.stringify(result), "only accepted from a hub coordinator");
+      assert.equal(fixture.commands.length, 0);
+    }),
+  );
+
   it.effect(
     "compensates the created shell when authority is revoked during attachment preparation",
     () =>

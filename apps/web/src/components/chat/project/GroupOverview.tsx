@@ -7,7 +7,7 @@
 // Why: Claude Code's Projects Overview lists every thread by live state; this is
 //      Synara's version, derived from the same helpers the sidebar uses.
 
-import type { AutomationDefinition, ThreadId } from "@synara/contracts";
+import type { AutomationDefinition, ProjectTask, ThreadId } from "@synara/contracts";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -162,6 +162,15 @@ export function GroupThreadRow({
     });
   };
 
+  const awaitingPlanApproval =
+    row.task?.pipeline?.role === "plan" && row.task.status === "review" ? row.task : null;
+
+  const approvePlan = (task: ProjectTask) => {
+    void agent.acceptTask(task).then((ok) => {
+      if (!ok) toastManager.add({ type: "error", title: "Could not approve the plan." });
+    });
+  };
+
   const reopen = () => {
     if (row.task) {
       void agent.updateTaskStatus(row.task, { status: "ready", archived: false }).then((ok) => {
@@ -187,7 +196,9 @@ export function GroupThreadRow({
       [
         row.state === "resolved"
           ? { id: "reopen" as const, label: "Reopen", icon: REOPEN_MENU_ICON }
-          : { id: "resolve" as const, label: "Mark resolved", icon: RESOLVE_MENU_ICON },
+          : awaitingPlanApproval
+            ? { id: "approve-plan" as const, label: "Approve plan", icon: RESOLVE_MENU_ICON }
+            : { id: "resolve" as const, label: "Mark resolved", icon: RESOLVE_MENU_ICON },
         {
           id: "split" as const,
           label: "Open in split view",
@@ -197,6 +208,7 @@ export function GroupThreadRow({
       ],
       position,
     );
+    if (clicked === "approve-plan" && awaitingPlanApproval) approvePlan(awaitingPlanApproval);
     if (clicked === "resolve") markResolved();
     if (clicked === "reopen") reopen();
     if (clicked === "split") onOpenThreadSplit(row.thread.id);

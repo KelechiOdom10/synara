@@ -56,6 +56,7 @@ function makeTask(overrides: Partial<ProjectTask> = {}): ProjectTask {
     status: "ready",
     dependsOnTaskIds: [],
     assignedThreadId: null,
+    pipeline: null,
     repairCount: 0,
     revision: 1 as never,
     archivedAt: null,

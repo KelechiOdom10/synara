@@ -8,6 +8,7 @@
 import { Schema } from "effect";
 
 import { ProjectId, ThreadId, TurnId } from "./baseSchemas";
+import { ProjectTaskPipeline } from "./issuePipeline";
 import { ModelSelection, ProviderKind } from "./orchestration";
 import { ProviderModelDescriptor } from "./providerDiscovery";
 import { ServerProviderAuthStatus } from "./server";
@@ -83,6 +84,8 @@ export const SynaraCreateThreadSpec = Schema.Struct({
   // External integrations need the "computer:control" scope; provider sessions
   // cannot delegate computer control to created threads.
   enableComputerControl: Schema.optional(Schema.Boolean),
+  // Hub coordinators tag issue-pipeline workers; the server refuses a tag whose gate is not met.
+  pipeline: Schema.optional(ProjectTaskPipeline),
 });
 export type SynaraCreateThreadSpec = typeof SynaraCreateThreadSpec.Type;
 

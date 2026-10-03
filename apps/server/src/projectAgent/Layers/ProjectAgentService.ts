@@ -127,6 +127,7 @@ import { ProjectionThreadRepository } from "../../persistence/Services/Projectio
 import { LibraryError, ProjectAgentServiceError } from "../Errors.ts";
 import { isAllowedGroupCoordinatorCreateTarget } from "../groupCreateAllowlist.ts";
 import { gateProjectAgentServiceForStable, isServerGroupsEnabled } from "../groupsBetaGate.ts";
+import { pipelineAcceptanceRequiresUser } from "../issuePipeline.ts";
 import { cleanupGroupWorkspaceRoot } from "../../groupWorkspaceScaffold.ts";
 import {
   hashDocumentContent,
@@ -4146,6 +4147,7 @@ export const makeProjectAgentService = Effect.gen(function* () {
           status: ready ? "ready" : "planned",
           dependsOnTaskIds,
           assignedThreadId: null,
+          pipeline: input.pipeline ?? null,
           repairCount: 0,
           archivedAt: null,
           revision: 1,
@@ -4203,6 +4205,11 @@ export const makeProjectAgentService = Effect.gen(function* () {
         // "done" is routed through the same acceptance path as accept=true so
         // it also requires evidence and unblocks dependents.
         const wantsAccept = input.accept === true || input.status === "done";
+        if (wantsAccept && principal.kind !== "user" && pipelineAcceptanceRequiresUser(current)) {
+          return yield* Effect.fail(
+            fail("Only the user can approve an issue plan before it is built.", "forbidden"),
+          );
+        }
         if (wantsAccept) {
           if (!canAcceptTask(principal, input.projectId)) {
             return yield* Effect.fail(
@@ -5052,6 +5059,7 @@ export const makeProjectAgentService = Effect.gen(function* () {
                 goalId: activeGoal.id,
                 title,
                 dependsOnTaskIds: [],
+                ...(input.pipelines?.[index] ? { pipeline: input.pipelines[index] } : {}),
               },
               principal,
             );

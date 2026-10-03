@@ -20,6 +20,7 @@ import {
 } from "./baseSchemas";
 import { ModelSelection, ProviderStartOptions } from "./orchestration";
 import { HubWorkItem } from "./hubWork";
+import { ProjectTaskPipeline } from "./issuePipeline";
 
 export const PROJECT_AGENT_DOCUMENT_MAX_BYTES = 256 * 1024;
 export const PROJECT_AGENT_CONTEXT_BUDGET_CHARS = 32_000;
@@ -146,6 +147,7 @@ export const ProjectTask = Schema.Struct({
   status: ProjectTaskStatus,
   dependsOnTaskIds: Schema.Array(ProjectTaskId),
   assignedThreadId: Schema.NullOr(ThreadId),
+  pipeline: Schema.NullOr(ProjectTaskPipeline),
   repairCount: NonNegativeInt,
   archivedAt: Schema.NullOr(IsoDateTime),
   revision: ProjectAgentRevision,
@@ -901,6 +903,7 @@ export const ProjectAgentCreateTaskInput = Schema.Struct({
   dependsOnTaskIds: Schema.optional(Schema.Array(ProjectTaskId)).pipe(
     Schema.withDecodingDefault(() => []),
   ),
+  pipeline: Schema.optional(ProjectTaskPipeline),
 });
 export type ProjectAgentCreateTaskInput = typeof ProjectAgentCreateTaskInput.Type;
 

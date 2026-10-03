@@ -165,6 +165,7 @@ describe("useProjectAgent", () => {
       status: "running",
       dependsOnTaskIds: [],
       assignedThreadId: ThreadId.makeUnsafe("thread-worker-1"),
+      pipeline: null,
       repairCount: 0,
       archivedAt: null,
       revision: 1,

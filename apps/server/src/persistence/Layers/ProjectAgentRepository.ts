@@ -18,6 +18,7 @@ import {
   ProjectTask,
   ProjectTaskAttempt,
   ProjectTaskId,
+  ProjectTaskPipeline,
   ProjectThreadIndexEntry,
   ModelSelection,
   ProviderStartOptions,
@@ -94,6 +95,7 @@ const TaskRow = Schema.Struct({
   acceptanceCriteria: ProjectTask.fields.acceptanceCriteria,
   status: ProjectTask.fields.status,
   assignedThreadId: ProjectTask.fields.assignedThreadId,
+  pipeline: Schema.NullOr(Schema.fromJsonString(ProjectTaskPipeline)),
   repairCount: ProjectTask.fields.repairCount,
   archivedAt: ProjectTask.fields.archivedAt,
   revision: ProjectTask.fields.revision,
@@ -402,7 +404,8 @@ const makeProjectAgentRepository = Effect.gen(function* () {
       SELECT
         task_id AS "id", project_id AS "projectId", goal_id AS "goalId", title, description,
         acceptance_criteria AS "acceptanceCriteria", status,
-        assigned_thread_id AS "assignedThreadId", repair_count AS "repairCount",
+        assigned_thread_id AS "assignedThreadId", pipeline_json AS "pipeline",
+        repair_count AS "repairCount",
         archived_at AS "archivedAt", revision, created_at AS "createdAt", updated_at AS "updatedAt"
       FROM project_agent_tasks
       WHERE task_id = ${taskId}
@@ -416,7 +419,8 @@ const makeProjectAgentRepository = Effect.gen(function* () {
       SELECT
         task_id AS "id", project_id AS "projectId", goal_id AS "goalId", title, description,
         acceptance_criteria AS "acceptanceCriteria", status,
-        assigned_thread_id AS "assignedThreadId", repair_count AS "repairCount",
+        assigned_thread_id AS "assignedThreadId", pipeline_json AS "pipeline",
+        repair_count AS "repairCount",
         archived_at AS "archivedAt", revision, created_at AS "createdAt", updated_at AS "updatedAt"
       FROM project_agent_tasks
       WHERE assigned_thread_id = ${threadId}
@@ -430,10 +434,12 @@ const makeProjectAgentRepository = Effect.gen(function* () {
     execute: (row) => sql`
       INSERT INTO project_agent_tasks (
         task_id, project_id, goal_id, title, description, acceptance_criteria, status,
-        assigned_thread_id, repair_count, archived_at, revision, created_at, updated_at
+        assigned_thread_id, pipeline_json, repair_count, archived_at, revision, created_at,
+        updated_at
       ) VALUES (
         ${row.id}, ${row.projectId}, ${row.goalId}, ${row.title}, ${row.description},
-        ${row.acceptanceCriteria}, ${row.status}, ${row.assignedThreadId}, ${row.repairCount},
+        ${row.acceptanceCriteria}, ${row.status}, ${row.assignedThreadId}, ${row.pipeline},
+        ${row.repairCount},
         ${row.archivedAt}, ${row.revision}, ${row.createdAt}, ${row.updatedAt}
       )
     `,
@@ -449,6 +455,7 @@ const makeProjectAgentRepository = Effect.gen(function* () {
         acceptance_criteria = ${row.acceptanceCriteria},
         status = ${row.status},
         assigned_thread_id = ${row.assignedThreadId},
+        pipeline_json = ${row.pipeline},
         repair_count = ${row.repairCount},
         archived_at = ${row.archivedAt},
         revision = ${row.revision},
@@ -811,7 +818,8 @@ const makeProjectAgentRepository = Effect.gen(function* () {
           SELECT
             task_id AS "id", project_id AS "projectId", goal_id AS "goalId", title, description,
             acceptance_criteria AS "acceptanceCriteria", status,
-            assigned_thread_id AS "assignedThreadId", repair_count AS "repairCount",
+            assigned_thread_id AS "assignedThreadId", pipeline_json AS "pipeline",
+        repair_count AS "repairCount",
             archived_at AS "archivedAt", revision, created_at AS "createdAt", updated_at AS "updatedAt"
           FROM project_agent_tasks
           WHERE project_id = ${input.projectId}
@@ -853,6 +861,7 @@ const makeProjectAgentRepository = Effect.gen(function* () {
         acceptanceCriteria: task.acceptanceCriteria,
         status: task.status,
         assignedThreadId: task.assignedThreadId,
+        pipeline: task.pipeline,
         repairCount: task.repairCount,
         archivedAt: task.archivedAt,
         revision: task.revision,

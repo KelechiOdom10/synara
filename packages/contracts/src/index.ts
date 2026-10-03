@@ -38,6 +38,7 @@ export * from "./asyncUserInput";
 export * from "./editor";
 export * from "./environment";
 export * from "./project";
+export * from "./issuePipeline";
 export * from "./projectAgent";
 export * from "./hubWork";
 export * from "./projectImport";

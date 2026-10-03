@@ -418,6 +418,26 @@ export const makeAgentGateway = Effect.gen(function* () {
       "IDs of original human messages in this coordinator conversation. Omit only when delegating the current human turn. Synara forwards their canonical text and attachments.",
   };
 
+  const pipelineSchema = {
+    type: "object",
+    description:
+      "Hub coordinators only: tag this worker as one step of a GitHub issue pipeline. Synara refuses the thread when the step's gate is not met (plan approved by the user before build; review on a different provider than the build; limited fix rounds).",
+    properties: {
+      issue: {
+        type: "object",
+        properties: {
+          repository: { type: "string", description: "owner/name" },
+          number: { type: "integer", minimum: 1 },
+        },
+        required: ["repository", "number"],
+        additionalProperties: false,
+      },
+      role: { type: "string", enum: ["plan", "build", "review"] },
+    },
+    required: ["issue", "role"],
+    additionalProperties: false,
+  };
+
   const createThreads: ToolEntry = {
     requiredCapability: "thread:write",
     requiresActiveTurn: true,
@@ -462,6 +482,7 @@ export const makeAgentGateway = Effect.gen(function* () {
                   type: "string",
                   enum: ["approval-required", "full-access"],
                 },
+                pipeline: pipelineSchema,
               },
               required: ["prompt", "target"],
               additionalProperties: false,
@@ -521,6 +542,7 @@ export const makeAgentGateway = Effect.gen(function* () {
             type: "string",
             enum: ["approval-required", "full-access"],
           },
+          pipeline: pipelineSchema,
         },
         required: ["requestId", "prompt"],
         additionalProperties: false,
@@ -559,6 +581,7 @@ export const makeAgentGateway = Effect.gen(function* () {
           "branchName",
           "runtimeMode",
           "notifyCreatorOnComplete",
+          "pipeline",
         ]) {
           const value = args[key];
           if (value !== undefined) spec[key] = value;

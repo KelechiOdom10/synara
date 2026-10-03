@@ -137,6 +137,25 @@ The sidebar's attention indicator includes the Hub's owned workers in linked rep
 workers whose recovery needs your help. For a closed Hub, recovery attention refreshes on return
 to the window and within 30 seconds while the window is visible.
 
+## Issue pipelines
+
+A coordinator can take a GitHub issue from plan to pull request, one worker per step. Ask for it
+in plain words, for example "Take kelechiodom/work-achievements-tracker#3 through to a PR". Link
+the repository to the hub and start a hub goal first; pipelines run only while the goal is active.
+
+| Step    | What happens                                                                                                      | Gate Synara enforces                                                       |
+| ------- | ----------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Plan    | A worker reads the issue and reports scope, acceptance criteria, and slices. It edits no code.                    | At most two issues in progress; one open pipeline per issue                |
+| Approve | Right-click the plan thread in the Hubs panel and choose **Approve plan**.                                        | Only you can approve. The coordinator and workers cannot.                  |
+| Build   | One worker per issue builds in a worktree and runs the checks. Fixes and the pull request go to this same thread. | Needs an approved plan; one build per issue                                |
+| Review  | A worker on a **different provider** reviews the build's diff and reports blockers first.                         | Needs a reported build; different provider; first review plus 2 fix rounds |
+| PR      | The build thread opens a draft pull request that closes the issue. You merge it.                                  | The coordinator never merges                                               |
+
+A refused step tells the coordinator why, and it reports the reason to you. A step that was queued
+and became invalid while it waited (for example, a second review queued before the first one
+finished) fails with the same reason instead of starting. Mark the build thread resolved after
+you merge so the issue stops counting as in progress.
+
 ## How monitoring works
 
 Monitoring is done by the Synara server, by fixed rules. It does not depend on the model

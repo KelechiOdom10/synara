@@ -54,6 +54,7 @@ import type {
   ProjectGoal,
   ProjectId,
   ProjectTask,
+  ProjectTaskPipeline,
   ProjectThreadIndexEntry,
   ThreadId,
 } from "@synara/contracts";
@@ -234,6 +235,8 @@ export interface ProjectAgentServiceShape {
     /** The task prompt each thread was created with — stored durably so the
      * stall-recovery ladder can re-dispatch it after a restart. */
     readonly prompts?: ReadonlyArray<string | null>;
+    /** The issue-pipeline tag each thread was created with; recorded on its task. */
+    readonly pipelines?: ReadonlyArray<ProjectTaskPipeline | null>;
   }) => Effect.Effect<void, ProjectAgentServiceError>;
   readonly reconcilePendingWakes: () => Effect.Effect<void, ProjectAgentServiceError>;
   readonly inspectWorkerHealth: () => Effect.Effect<void, ProjectAgentServiceError>;
