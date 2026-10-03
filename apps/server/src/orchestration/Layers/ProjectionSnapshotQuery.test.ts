@@ -35,6 +35,41 @@ const projectionSnapshotLayer = it.layer(
 );
 
 projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
+  it.effect("hydrates provider instance in batched thread shells", () =>
+    Effect.gen(function* () {
+      const query = yield* ProjectionSnapshotQuery;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = asThreadId("batch-session-thread");
+      const now = "2026-10-03T12:00:00.000Z";
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, scripts_json, created_at, updated_at
+        ) VALUES ('batch-session-project', 'Batch session', '/tmp/batch-session', '[]', ${now}, ${now})
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, created_at, updated_at
+        ) VALUES (
+          ${threadId}, 'batch-session-project', 'Batch session thread',
+          '{"provider":"codex","instanceId":"codex","model":"gpt-6-sol"}', ${now}, ${now}
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_thread_sessions (
+          thread_id, status, provider_name, provider_instance_id,
+          provider_session_id, provider_thread_id, runtime_mode, active_turn_id,
+          last_error, updated_at
+        ) VALUES (
+          ${threadId}, 'running', 'codex', 'codex', NULL, NULL,
+          'approval-required', NULL, NULL, ${now}
+        )
+      `;
+
+      const shells = yield* query.getThreadShellsByIds([threadId]);
+      assert.equal(shells[0]?.session?.providerInstanceId, "codex");
+    }),
+  );
+
   it.effect("rehydrates pending cache decisions in snapshots and thread detail after restart", () =>
     Effect.gen(function* () {
       const query = yield* ProjectionSnapshotQuery;
