@@ -15,6 +15,7 @@ import {
 import { Effect, Option, Schema } from "effect";
 
 import { stableGatewayDigest } from "../agentGateway/creationUtils";
+import { hubWorkDispatchBudgetViolation } from "../agentGateway/hubWorkSource";
 import type { ProjectionSnapshotQueryShape } from "../orchestration/Services/ProjectionSnapshotQuery";
 import type { OrchestrationCommandReceiptRepositoryShape } from "../persistence/Services/OrchestrationCommandReceipts";
 import type { ProjectionThreadMessageRepositoryShape } from "../persistence/Services/ProjectionThreadMessages";
@@ -291,6 +292,18 @@ export function makeHubWorkService(dependencies: HubWorkDependencies): HubWorkSe
             createdAt: now,
             updatedAt: now,
           }).pipe(Effect.mapError(serviceError));
+          // A replay must keep returning the items it already accepted, whatever their outcome.
+          const accepted = yield* repository.get(record.id).pipe(Effect.mapError(serviceError));
+          const budgetViolation =
+            accepted?.fingerprint === record.fingerprint
+              ? null
+              : hubWorkDispatchBudgetViolation({
+                  workItemId: record.id,
+                  brief: record.creationSpec.prompt,
+                  sourceMessages: record.sourceMessages,
+                });
+          if (budgetViolation)
+            return yield* Effect.fail(fail(`Task ${taskIndex + 1}: ${budgetViolation}`, "limit"));
           records.push(record);
         }
         const result = yield* repository.submit(records).pipe(Effect.mapError(serviceError));

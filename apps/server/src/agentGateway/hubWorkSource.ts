@@ -1,4 +1,6 @@
 import {
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ThreadId,
   TurnId,
   type HubWorkSourceMessage,
@@ -88,6 +90,30 @@ export function resolveHubWorkSource(input: {
       }),
     );
   });
+}
+
+/** Explains why a delegation cannot start, measured against the worker's `thread.turn.start` input. */
+export function hubWorkDispatchBudgetViolation(input: {
+  readonly workItemId: string;
+  readonly brief: string;
+  readonly sourceMessages: readonly HubWorkSourceMessage[];
+}): string | null {
+  const counts = input.sourceMessages.map(
+    (message) => [message.messageId, message.attachments.length] as const,
+  );
+  const attachmentCount = counts.reduce((total, [, count]) => total + count, 0);
+  if (attachmentCount > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+    const perMessage = counts
+      .filter(([, count]) => count > 0)
+      .map(([messageId, count]) => `${messageId}: ${count}`)
+      .join(", ");
+    return `Delegation carries ${attachmentCount} attachments; the limit is ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS}. Select fewer source messages (${perMessage}).`;
+  }
+  const promptLength = renderHubWorkPrompt(input).length;
+  if (promptLength > PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
+    return `Delegation prompt is ${promptLength} characters; the limit is ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS}. Shorten the brief or select fewer source messages.`;
+  }
+  return null;
 }
 
 export function renderHubWorkPrompt(input: {

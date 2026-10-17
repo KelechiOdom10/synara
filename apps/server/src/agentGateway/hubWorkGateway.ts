@@ -27,7 +27,11 @@ import type { ProjectAgentServiceShape } from "../projectAgent/Services/ProjectA
 import type { makeCreateThreadsHandler } from "./creationCoordinator";
 import { stableGatewayDigest } from "./creationUtils";
 import { cloneDelegatedAttachments } from "./delegatedAttachments";
-import { renderHubWorkPrompt, resolveHubWorkSource } from "./hubWorkSource";
+import {
+  hubWorkDispatchBudgetViolation,
+  renderHubWorkPrompt,
+  resolveHubWorkSource,
+} from "./hubWorkSource";
 import { mcpToolResultError, mcpToolResultJson } from "./protocol";
 import { errorText, readStringArg, ToolInputError } from "./toolInput";
 import {
@@ -122,6 +126,20 @@ export function makeHubWorkGateway(dependencies: {
       // nonterminal saga here would also block the scanner waiting for that saga.
       if (yield* hasUnfinishedCreation(record)) return;
       const spec = record.creationSpec;
+      // Work queued before submission enforced the budget must fail before a worker exists.
+      const budgetViolation = hubWorkDispatchBudgetViolation({
+        workItemId: record.id,
+        brief: spec.prompt,
+        sourceMessages: record.sourceMessages,
+      });
+      if (budgetViolation) {
+        yield* service.setState({
+          workItemId: record.id,
+          state: "failed",
+          resultSummary: budgetViolation.slice(0, 4_000),
+        });
+        return;
+      }
       const result = yield* dependencies.createThreads(
         {
           requestId: record.id,

@@ -1,6 +1,7 @@
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import {
   MessageId,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ThreadId,
   TurnId,
   type HubWorkSourceMessage,
@@ -13,7 +14,11 @@ import type { ProjectionSnapshotQueryShape } from "../orchestration/Services/Pro
 import { ProjectionTurnRepositoryLive } from "../persistence/Layers/ProjectionTurns.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import { ProjectionTurnRepository } from "../persistence/Services/ProjectionTurns.ts";
-import { renderHubWorkPrompt, resolveHubWorkSource } from "./hubWorkSource.ts";
+import {
+  hubWorkDispatchBudgetViolation,
+  renderHubWorkPrompt,
+  resolveHubWorkSource,
+} from "./hubWorkSource.ts";
 import { ToolInputError } from "./toolInput.ts";
 
 const threadId = ThreadId.makeUnsafe("hub-coordinator");
@@ -354,4 +359,85 @@ it("serializes original text and attachment references independently of the coor
   assert.equal(originals[0]!.messageId, "human-original");
   assert.deepEqual(originals[0]!.attachments, [quote]);
   assert.notInclude(originals[0]!.text, "Investigate only");
+});
+
+const image = (id: string) =>
+  ({ type: "image", id, name: `${id}.png`, mimeType: "image/png", sizeBytes: 1 }) as const;
+const quote = (id: string) =>
+  ({
+    type: "assistant-selection",
+    id,
+    assistantMessageId: MessageId.makeUnsafe("assistant-original"),
+    text: `Quoted ${id}`,
+  }) as const;
+const source = (
+  id: string,
+  attachments: HubWorkSourceMessage["attachments"],
+  text = id,
+): HubWorkSourceMessage => ({
+  threadId,
+  messageId: MessageId.makeUnsafe(id),
+  turnId,
+  text,
+  attachments,
+  createdAt: now,
+  updatedAt: now,
+});
+const images = (prefix: string, count: number) =>
+  Array.from({ length: count }, (_, index) => image(`${prefix}-${index}`));
+describe("hubWorkDispatchBudgetViolation", () => {
+  const budget = (sourceMessages: readonly HubWorkSourceMessage[], brief = "Research.") =>
+    hubWorkDispatchBudgetViolation({ workItemId: "hub-work:fixture", brief, sourceMessages });
+
+  it("accepts exactly eight binary attachments across messages", () => {
+    assert.isNull(budget([source("first", images("a", 5)), source("second", images("b", 3))]));
+  });
+
+  it("rejects nine binary attachments and names each contributing message", () => {
+    const violation = budget([
+      source("vision", images("a", 3)),
+      source("text-only", []),
+      source("recording", images("b", 6)),
+    ]);
+    assert.include(violation, "carries 9 attachments; the limit is 8");
+    assert.include(violation, "vision: 3, recording: 6");
+    assert.notInclude(violation, "text-only");
+  });
+
+  it("counts assistant selections, which the worker turn also carries as attachments", () => {
+    const quoteMessage = source("quote", [quote("q1")]);
+    const reportMessage = source("report", [quote("q2"), image("c")]);
+    assert.include(
+      budget([
+        source("vision", images("a", 3)),
+        quoteMessage,
+        source("recording", images("b", 3)),
+        reportMessage,
+      ]),
+      "carries 9 attachments",
+    );
+    assert.isNull(
+      budget([
+        source("vision", images("a", 3)),
+        quoteMessage,
+        source("recording", images("b", 2)),
+        reportMessage,
+      ]),
+    );
+  });
+
+  it("measures the exact rendered worker prompt against the input cap", () => {
+    const sources = [source("vision", [], "Original request")];
+    const overhead = renderHubWorkPrompt({
+      workItemId: "hub-work:fixture",
+      brief: "",
+      sourceMessages: sources,
+    }).length;
+    const fitting = "x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS - overhead);
+    assert.isNull(budget(sources, fitting));
+    assert.include(
+      budget(sources, `${fitting}x`),
+      `Delegation prompt is ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS + 1} characters`,
+    );
+  });
 });

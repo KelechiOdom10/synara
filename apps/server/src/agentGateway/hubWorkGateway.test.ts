@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   MessageId,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ProjectId,
   ThreadId,
   TurnId,
@@ -9,6 +10,7 @@ import {
   type SynaraCreateThreadsInput,
 } from "@synara/contracts";
 import { Effect, Layer, Option } from "effect";
+import { vi } from "vitest";
 
 import {
   HubWorkRepositoryError,
@@ -20,8 +22,17 @@ import { ProjectAgentRepositoryLive } from "../persistence/Layers/ProjectAgentRe
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite";
 import type { ProjectAgentServiceShape } from "../projectAgent/Services/ProjectAgentService";
 import { makeHubWorkGateway } from "./hubWorkGateway";
+import { hubWorkDispatchBudgetViolation } from "./hubWorkSource";
 import { mcpToolResultError, mcpToolResultJson } from "./protocol";
 import type { ToolContext } from "./toolRuntime";
+
+vi.mock("./hubWorkSource", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./hubWorkSource")>();
+  return {
+    ...original,
+    hubWorkDispatchBudgetViolation: vi.fn(original.hubWorkDispatchBudgetViolation),
+  };
+});
 
 const tests = it.layer(
   Layer.mergeAll(HubWorkRepositoryLive, ProjectAgentRepositoryLive).pipe(
@@ -194,6 +205,19 @@ function harness(name: string) {
     };
   });
 }
+
+const images = (prefix: string, count: number) =>
+  Array.from({ length: count }, (_, index) => ({
+    type: "image" as const,
+    id: `${prefix}-${index}`,
+    name: `${prefix}-${index}.png`,
+    mimeType: "image/png",
+    sizeBytes: 1,
+  }));
+const withAttachments = (
+  id: string,
+  attachments: OrchestrationThread["messages"][number]["attachments"],
+) => ({ ...source, id: MessageId.makeUnsafe(id), attachments }) as unknown as typeof source;
 
 tests("Hub work gateway integration", (it) => {
   for (const count of [1, 2]) {
@@ -384,5 +408,168 @@ tests("Hub work gateway integration", (it) => {
         [[older.id], [source.id]],
       );
     }),
+  );
+
+  it.effect(
+    "rejects the whole batch before persisting or creating anything when one task exceeds the attachment budget",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* harness("attachment-budget-atomic");
+        const oversized = withAttachments("oversized-message", images("shot", 9));
+        h.messages.unshift(oversized);
+        const input = {
+          ...h.input,
+          threads: [
+            h.input.threads[0]!,
+            { ...h.input.threads[1]!, contextMessageIds: [oversized.id] },
+          ],
+        };
+        for (const attempt of [1, 2]) {
+          const rejected = yield* h.gateway.submit(input, h.context);
+          assert.equal(rejected?.isError, true, `attempt ${attempt}`);
+          const text = rejected?.content.find((entry) => entry.type === "text");
+          assert.include(text?.type === "text" ? text.text : "", "Task 2: Delegation carries 9");
+          assert.lengthOf(yield* h.repository.list(h.projectId), 0);
+        }
+        yield* h.gateway.tick;
+        assert.isFalse(h.calls.some((call) => call.threads[0]!.projectId === h.projectId));
+
+        const corrected = yield* h.gateway.submit(
+          { ...input, threads: [input.threads[0]!, h.input.threads[1]!] },
+          h.context,
+        );
+        assert.notEqual(corrected?.isError, true);
+        assert.lengthOf(yield* h.repository.list(h.projectId), 2);
+      }),
+  );
+
+  it.effect(
+    "rejects seven binary attachments plus two quoted selections at submission, naming each message",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* harness("attachment-budget-selections");
+        const quote = (id: string) => ({
+          type: "assistant-selection" as const,
+          id,
+          assistantMessageId: MessageId.makeUnsafe("assistant-message"),
+          text: `Quoted ${id}`,
+        });
+        const sources = [
+          withAttachments("vision", images("vision", 3)),
+          withAttachments("free-will", [quote("q1")]),
+          withAttachments("esports", images("esports", 3)),
+          withAttachments("report", [quote("q2"), ...images("report", 1)]),
+        ];
+        h.messages.unshift(...sources);
+        const submit = (ids: readonly string[]) =>
+          h.gateway.submit(
+            { ...h.input, threads: [{ ...h.input.threads[0]!, contextMessageIds: [...ids] }] },
+            h.context,
+          );
+        const rejected = yield* submit(sources.map((message) => message.id));
+        const text = rejected?.content.find((entry) => entry.type === "text");
+        assert.equal(rejected?.isError, true);
+        assert.include(
+          text?.type === "text" ? text.text : "",
+          "carries 9 attachments; the limit is 8. Select fewer source messages (vision: 3, free-will: 1, esports: 3, report: 2)",
+        );
+        assert.lengthOf(yield* h.repository.list(h.projectId), 0);
+
+        const accepted = yield* submit(["vision", "esports", "report"]);
+        assert.notEqual(accepted?.isError, true);
+        yield* h.gateway.tick;
+        const ownCalls = h.calls.filter((call) => call.threads[0]!.projectId === h.projectId);
+        assert.lengthOf(ownCalls, 1);
+        assert.include(ownCalls[0]!.threads[0]!.prompt, "Quoted q2");
+      }),
+  );
+
+  it.effect(
+    "rejects a task whose rendered prompt exceeds the turn input cap before persisting",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* harness("prompt-budget");
+        const rejected = yield* h.gateway.submit(
+          {
+            ...h.input,
+            threads: [
+              h.input.threads[0]!,
+              { ...h.input.threads[1]!, prompt: "x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS) },
+            ],
+          },
+          h.context,
+        );
+        const text = rejected?.content.find((entry) => entry.type === "text");
+        assert.equal(rejected?.isError, true);
+        assert.include(text?.type === "text" ? text.text : "", "Task 2: Delegation prompt is");
+        assert.lengthOf(yield* h.repository.list(h.projectId), 0);
+      }),
+  );
+
+  it.effect("replays an over-budget batch accepted before submission checks", () =>
+    Effect.gen(function* () {
+      const h = yield* harness("attachment-budget-replay");
+      const oversized = withAttachments("oversized-replay", images("shot", 9));
+      h.messages.unshift(oversized);
+      const input = {
+        ...h.input,
+        threads: [{ ...h.input.threads[0]!, contextMessageIds: [oversized.id] }],
+      };
+      vi.mocked(hubWorkDispatchBudgetViolation).mockReturnValueOnce(null);
+      const original = yield* h.gateway.submit(input, h.context);
+      assert.notEqual(original?.isError, true);
+
+      const replay = yield* h.gateway.submit(input, h.context);
+      assert.notEqual(replay?.isError, true);
+      const text = replay?.content.find((entry) => entry.type === "text");
+      const body = JSON.parse(text?.type === "text" ? text.text : "{}") as {
+        replayed: boolean;
+        acceptedCount: number;
+      };
+      assert.equal(body.replayed, true);
+      assert.equal(body.acceptedCount, 1);
+
+      yield* h.gateway.tick;
+      const [record] = yield* h.repository.list(h.projectId);
+      assert.equal(record?.state, "failed");
+      assert.equal(record?.workerThreadId, null);
+      assert.isFalse(h.calls.some((call) => call.threads[0]!.projectId === h.projectId));
+    }),
+  );
+
+  it.effect(
+    "fails over-budget work queued before submission checks without creating a worker",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* harness("attachment-budget-queued");
+        yield* h.gateway.submit({ ...h.input, threads: [h.input.threads[0]!] }, h.context);
+        const valid = (yield* h.repository.list(h.projectId))[0]!;
+        const legacy = {
+          ...valid,
+          id: "hub-work:legacy-over-budget",
+          requestId: "legacy-request",
+          scopeKey: "source:legacy",
+          fingerprint: "legacy",
+          taskIndex: 0,
+          sourceMessages: [{ ...valid.sourceMessages[0]!, attachments: images("legacy", 9) }],
+          createdAt: "2026-10-02T09:00:00.000Z",
+          updatedAt: "2026-10-02T09:00:00.000Z",
+        };
+        yield* h.repository.submit([legacy]);
+        yield* h.gateway.tick;
+        const ownCalls = () => h.calls.filter((call) => call.threads[0]!.projectId === h.projectId);
+        assert.lengthOf(ownCalls(), 1);
+        assert.notInclude(ownCalls()[0]!.threads[0]!.prompt, "legacy-0");
+        yield* h.gateway.service.setState({ workItemId: valid.id, state: "completed" });
+        yield* h.gateway.tick;
+        const failed = (yield* h.repository.list(h.projectId)).find(
+          (record) => record.id === legacy.id,
+        )!;
+        assert.equal(failed.state, "failed");
+        assert.equal(failed.slotHeld, false);
+        assert.equal(failed.workerThreadId, null);
+        assert.include(failed.resultSummary ?? "", "Delegation carries 9 attachments");
+        assert.lengthOf(ownCalls(), 1);
+      }),
   );
 });

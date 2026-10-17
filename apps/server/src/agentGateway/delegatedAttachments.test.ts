@@ -3,7 +3,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { assert, it } from "@effect/vitest";
-import { MessageId, ThreadId, type HubWorkSourceMessage } from "@synara/contracts";
+import {
+  MessageId,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
+  ThreadId,
+  type ChatFileAttachment,
+  type HubWorkSourceMessage,
+} from "@synara/contracts";
 import { Effect, Layer, Option } from "effect";
 
 import { resolveAttachmentRelativePath } from "../attachmentPaths.ts";
@@ -95,6 +101,19 @@ function sourceMessage(store: {
       updatedAt: now,
       turnId: null,
     } satisfies HubWorkSourceMessage;
+  });
+}
+
+function legacyFile(id: string, sizeBytes: number): ChatFileAttachment {
+  return { type: "file", id, name: `${id}.md`, mimeType: "text/markdown", sizeBytes };
+}
+
+function writeLegacyFile(store: { attachmentsDir: string }, attachment: ChatFileAttachment) {
+  return Effect.tryPromise(async () => {
+    const filePath = resolveAttachmentPath({ attachmentsDir: store.attachmentsDir, attachment })!;
+    await fs.writeFile(filePath, "");
+    await fs.truncate(filePath, attachment.sizeBytes);
+    return attachment;
   });
 }
 
@@ -419,6 +438,77 @@ it.effect("rejects too many delegated attachments before allocating storage", ()
         ownerId: principal.ownerId,
       });
       assert.equal(usage.homeCount ?? 0, 0);
+    }),
+  ),
+);
+
+it.effect("clones exactly eight source files", () =>
+  withStore((store) =>
+    Effect.gen(function* () {
+      const files = yield* Effect.forEach(
+        Array.from({ length: 8 }, (_, index) => legacyFile(`source-thread-file-${index}`, 4)),
+        (file) => writeLegacyFile(store, file),
+      );
+      const message = (id: string, attachments: readonly ChatFileAttachment[]) => ({
+        threadId: sourceThreadId,
+        messageId: MessageId.makeUnsafe(id),
+        turnId: null,
+        text: id,
+        attachments: [...attachments],
+        createdAt: now,
+        updatedAt: now,
+      });
+      const cloned = yield* cloneDelegatedAttachments(
+        cloneInput(store, [message("first", files.slice(0, 5)), message("second", files.slice(5))]),
+      );
+      assert.deepEqual(
+        cloned.map((attachment) => attachment.type === "file" && attachment.name),
+        files.map((file) => file.name),
+      );
+    }),
+  ),
+);
+
+it.effect("clones a screen recording under the file cap and rejects one above it", () =>
+  withStore((store) =>
+    Effect.gen(function* () {
+      const recording = yield* writeLegacyFile(store, {
+        ...legacyFile("source-thread-recording", 12_272_085),
+        name: "recording.mov",
+        mimeType: "video/quicktime",
+      });
+      const source = {
+        threadId: sourceThreadId,
+        messageId: sourceMessageId,
+        turnId: null,
+        text: "Watch this",
+        attachments: [recording],
+        createdAt: now,
+        updatedAt: now,
+      };
+      const cloned = yield* cloneDelegatedAttachments(cloneInput(store, [source]));
+      assert.equal(cloned[0]?.type === "file" && cloned[0].sizeBytes, 12_272_085);
+
+      const oversized = yield* writeLegacyFile(
+        store,
+        legacyFile("source-thread-oversized", PROVIDER_SEND_TURN_MAX_FILE_BYTES + 1),
+      );
+      const result = yield* cloneDelegatedAttachments({
+        ...cloneInput(store, [{ ...source, attachments: [oversized] }]),
+        dispatchKey: "hub-delivery-oversized",
+      }).pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(
+          (result.failure as ManagedAttachmentStoreError).code,
+          "attachment_source_unavailable",
+        );
+      }
+      const usage = yield* store.repository.getUsage({
+        ownerKind: principal.ownerKind,
+        ownerId: principal.ownerId,
+      });
+      assert.equal(usage.homeCount, 1);
     }),
   ),
 );
