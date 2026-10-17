@@ -8,6 +8,7 @@ import {
 } from "@synara/contracts";
 import { Effect, Option } from "effect";
 
+import type { BinaryChatAttachment } from "../managedAttachmentStore.ts";
 import type { ProjectionSnapshotQueryShape } from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import type { ProjectionTurnRepositoryShape } from "../persistence/Services/ProjectionTurns.ts";
 import { ToolInputError } from "./toolInput.ts";
@@ -92,6 +93,16 @@ export function resolveHubWorkSource(input: {
   });
 }
 
+/**
+ * Assistant selections already reach the worker inside the rendered source messages, and
+ * providers drop them from native prompt input, so only binary attachments are cloned.
+ */
+export function delegatedBinaryAttachments(message: HubWorkSourceMessage): BinaryChatAttachment[] {
+  return message.attachments.filter(
+    (attachment): attachment is BinaryChatAttachment => attachment.type !== "assistant-selection",
+  );
+}
+
 /** Explains why a delegation cannot start, measured against the worker's `thread.turn.start` input. */
 export function hubWorkDispatchBudgetViolation(input: {
   readonly workItemId: string;
@@ -99,7 +110,7 @@ export function hubWorkDispatchBudgetViolation(input: {
   readonly sourceMessages: readonly HubWorkSourceMessage[];
 }): string | null {
   const counts = input.sourceMessages.map(
-    (message) => [message.messageId, message.attachments.length] as const,
+    (message) => [message.messageId, delegatedBinaryAttachments(message).length] as const,
   );
   const attachmentCount = counts.reduce((total, [, count]) => total + count, 0);
   if (attachmentCount > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {

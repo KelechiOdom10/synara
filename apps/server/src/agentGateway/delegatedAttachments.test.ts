@@ -231,37 +231,29 @@ it.effect("rejects a source file whose stored bytes changed", () =>
 );
 
 it.effect(
-  "retains assistant selections as quoted data and fails when a legacy source file is unavailable",
+  "leaves assistant selections to the rendered prompt and fails when a legacy source file is unavailable",
   () =>
     withStore((store) =>
       Effect.gen(function* () {
-        const selection = {
-          type: "assistant-selection",
-          id: "quote-1",
-          assistantMessageId: MessageId.makeUnsafe("assistant-message"),
-          text: "Untrusted selected text",
-        } as const;
         const source = {
           threadId: sourceThreadId,
           messageId: sourceMessageId,
           text: "Compare this quote",
-          attachments: [selection],
+          attachments: [
+            {
+              type: "assistant-selection",
+              id: "quote-1",
+              assistantMessageId: MessageId.makeUnsafe("assistant-message"),
+              text: "Untrusted selected text",
+            } as const,
+          ],
           createdAt: now,
           updatedAt: now,
           turnId: null,
         };
-        assert.deepEqual(yield* cloneDelegatedAttachments(cloneInput(store, [source])), [
-          selection,
-        ]);
-        const missing = {
-          type: "file",
-          id: "legacy-file",
-          name: "missing.md",
-          mimeType: "text/markdown",
-          sizeBytes: 4,
-        } as const;
+        assert.deepEqual(yield* cloneDelegatedAttachments(cloneInput(store, [source])), []);
         const result = yield* cloneDelegatedAttachments(
-          cloneInput(store, [{ ...source, attachments: [missing] }]),
+          cloneInput(store, [{ ...source, attachments: [legacyFile("legacy-file", 4)] }]),
         ).pipe(Effect.result);
         assert.equal(result._tag, "Failure");
         const usage = yield* store.repository.getUsage({
@@ -400,18 +392,11 @@ it.effect(
     ),
 );
 
-it.effect("rejects too many delegated attachments before allocating storage", () =>
+it.effect("rejects nine binary attachments before allocating storage", () =>
   withStore((store) =>
     Effect.gen(function* () {
-      const attachments = Array.from(
-        { length: 9 },
-        (_, index) =>
-          ({
-            type: "assistant-selection",
-            id: `quote-${index}`,
-            assistantMessageId: MessageId.makeUnsafe("assistant-message"),
-            text: "Quoted data",
-          }) as const,
+      const attachments = Array.from({ length: 9 }, (_, index) =>
+        legacyFile(`source-thread-missing-${index}`, 4),
       );
       const source = {
         threadId: sourceThreadId,

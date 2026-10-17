@@ -5,7 +5,6 @@ import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
-  type ChatAttachment,
   type HubWorkSourceMessage,
 } from "@synara/contracts";
 import { Effect, Option } from "effect";
@@ -24,6 +23,7 @@ import type {
   ManagedAttachmentRepositoryShape,
 } from "../persistence/Services/ManagedAttachments.ts";
 import { resolveRealPathWithinRoot } from "../workspace/realPathContainment.ts";
+import { delegatedBinaryAttachments } from "./hubWorkSource.ts";
 
 interface CloneInput {
   readonly sourceMessages: readonly HubWorkSourceMessage[];
@@ -39,7 +39,7 @@ interface CloneInput {
 interface SourceAttachment {
   readonly threadId: string;
   readonly messageId: string;
-  readonly attachment: ChatAttachment;
+  readonly attachment: BinaryChatAttachment;
 }
 
 function unavailableAttachment(attachmentId: string, cause?: unknown) {
@@ -119,9 +119,6 @@ function readBinaryAttachment(input: {
 
 function loadSourceAttachment(input: CloneInput, source: SourceAttachment) {
   return Effect.gen(function* () {
-    if (source.attachment.type === "assistant-selection") {
-      return { source, attachment: source.attachment, bytes: null };
-    }
     let attachment: BinaryChatAttachment = source.attachment;
     let storagePath: string | null;
     let expectedHash: string | null = null;
@@ -223,8 +220,8 @@ function stageClone(
 /** Source messages must already be resolved and authorized by the Hub routing service. */
 export function cloneDelegatedAttachments(input: CloneInput) {
   return Effect.gen(function* () {
-    const sources = input.sourceMessages.flatMap((message) =>
-      message.attachments.map((attachment) => ({
+    const sources: SourceAttachment[] = input.sourceMessages.flatMap((message) =>
+      delegatedBinaryAttachments(message).map((attachment) => ({
         threadId: message.threadId,
         messageId: message.messageId,
         attachment,
@@ -245,13 +242,11 @@ export function cloneDelegatedAttachments(input: CloneInput) {
     return yield* Effect.forEach(
       loaded,
       (entry) =>
-        entry.attachment.type === "assistant-selection" || entry.bytes === null
-          ? Effect.succeed<ChatAttachment>(entry.attachment)
-          : stageClone(
-              input,
-              { source: entry.source, attachment: entry.attachment, bytes: entry.bytes },
-              now,
-            ),
+        stageClone(
+          input,
+          { source: entry.source, attachment: entry.attachment, bytes: entry.bytes },
+          now,
+        ),
       { concurrency: 1 },
     );
   });

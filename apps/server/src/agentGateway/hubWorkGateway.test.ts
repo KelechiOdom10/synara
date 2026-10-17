@@ -443,45 +443,36 @@ tests("Hub work gateway integration", (it) => {
       }),
   );
 
-  it.effect(
-    "rejects seven binary attachments plus two quoted selections at submission, naming each message",
-    () =>
-      Effect.gen(function* () {
-        const h = yield* harness("attachment-budget-selections");
-        const quote = (id: string) => ({
-          type: "assistant-selection" as const,
-          id,
-          assistantMessageId: MessageId.makeUnsafe("assistant-message"),
-          text: `Quoted ${id}`,
-        });
-        const sources = [
-          withAttachments("vision", images("vision", 3)),
-          withAttachments("free-will", [quote("q1")]),
-          withAttachments("esports", images("esports", 3)),
-          withAttachments("report", [quote("q2"), ...images("report", 1)]),
-        ];
-        h.messages.unshift(...sources);
-        const submit = (ids: readonly string[]) =>
-          h.gateway.submit(
-            { ...h.input, threads: [{ ...h.input.threads[0]!, contextMessageIds: [...ids] }] },
-            h.context,
-          );
-        const rejected = yield* submit(sources.map((message) => message.id));
-        const text = rejected?.content.find((entry) => entry.type === "text");
-        assert.equal(rejected?.isError, true);
-        assert.include(
-          text?.type === "text" ? text.text : "",
-          "carries 9 attachments; the limit is 8. Select fewer source messages (vision: 3, free-will: 1, esports: 3, report: 2)",
-        );
-        assert.lengthOf(yield* h.repository.list(h.projectId), 0);
-
-        const accepted = yield* submit(["vision", "esports", "report"]);
-        assert.notEqual(accepted?.isError, true);
-        yield* h.gateway.tick;
-        const ownCalls = h.calls.filter((call) => call.threads[0]!.projectId === h.projectId);
-        assert.lengthOf(ownCalls, 1);
-        assert.include(ownCalls[0]!.threads[0]!.prompt, "Quoted q2");
-      }),
+  it.effect("accepts seven binary attachments with two quoted selections", () =>
+    Effect.gen(function* () {
+      const h = yield* harness("attachment-budget-selections");
+      const quote = (id: string) => ({
+        type: "assistant-selection" as const,
+        id,
+        assistantMessageId: MessageId.makeUnsafe("assistant-message"),
+        text: `Quoted ${id}`,
+      });
+      const sources = [
+        withAttachments("vision", images("vision", 3)),
+        withAttachments("free-will", [quote("q1")]),
+        withAttachments("esports", images("esports", 3)),
+        withAttachments("report", [quote("q2"), ...images("report", 1)]),
+      ];
+      h.messages.unshift(...sources);
+      const accepted = yield* h.gateway.submit(
+        {
+          ...h.input,
+          threads: [{ ...h.input.threads[0]!, contextMessageIds: sources.map((m) => m.id) }],
+        },
+        h.context,
+      );
+      assert.notEqual(accepted?.isError, true);
+      yield* h.gateway.tick;
+      const ownCalls = h.calls.filter((call) => call.threads[0]!.projectId === h.projectId);
+      assert.lengthOf(ownCalls, 1);
+      assert.include(ownCalls[0]!.threads[0]!.prompt, "Quoted q1");
+      assert.include(ownCalls[0]!.threads[0]!.prompt, "Quoted q2");
+    }),
   );
 
   it.effect(

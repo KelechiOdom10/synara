@@ -404,26 +404,21 @@ describe("hubWorkDispatchBudgetViolation", () => {
     assert.notInclude(violation, "text-only");
   });
 
-  it("counts assistant selections, which the worker turn also carries as attachments", () => {
-    const quoteMessage = source("quote", [quote("q1")]);
-    const reportMessage = source("report", [quote("q2"), image("c")]);
-    assert.include(
-      budget([
-        source("vision", images("a", 3)),
-        quoteMessage,
-        source("recording", images("b", 3)),
-        reportMessage,
-      ]),
-      "carries 9 attachments",
-    );
-    assert.isNull(
-      budget([
-        source("vision", images("a", 3)),
-        quoteMessage,
-        source("recording", images("b", 2)),
-        reportMessage,
-      ]),
-    );
+  it("does not count assistant selections, whose text still reaches the prompt", () => {
+    const sources = [
+      source("vision", images("a", 3)),
+      source("quote", [quote("q1")]),
+      source("recording", images("b", 3)),
+      source("report", [quote("q2"), image("c")]),
+    ];
+    assert.isNull(budget(sources));
+    const prompt = renderHubWorkPrompt({
+      workItemId: "hub-work:fixture",
+      brief: "Research.",
+      sourceMessages: sources,
+    });
+    assert.include(prompt, "Quoted q1");
+    assert.include(prompt, "Quoted q2");
   });
 
   it("measures the exact rendered worker prompt against the input cap", () => {
